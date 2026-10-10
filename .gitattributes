@@ -1,0 +1,2 @@
+# Store .bat with CRLF in the repo itself, so raw downloads and ZIPs also get CRLF
+*.bat -text
