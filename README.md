@@ -13,6 +13,17 @@
 
 ## 运行
 
+### Windows 一键启动
+
+双击仓库根目录的 `start.bat`。
+
+- 第一次运行会在仓库旁建一个 `.venv` 虚拟环境并安装依赖（需要联网），之后再双击就直接启动。
+- 前提是装了 Python 3.8 以上（python.org 版安装时勾选 "Add python.exe to PATH"，或者装了 `py` 启动器）。
+- 黑色窗口要一直开着，关掉它程序就退出了。
+- 出问题想重装依赖：删掉 `.venv` 文件夹再双击。
+
+### 手动运行
+
 ```bash
 pip install -r requirements.txt
 python main.py
