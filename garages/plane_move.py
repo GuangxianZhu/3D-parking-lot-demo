@@ -43,6 +43,10 @@ class PlaneMove(Garage):
     def has_car(self, sid):
         return self.car[sid] is not None
 
+    def car_in(self, sid):
+        return self.car[sid]
+
+
     def pos(self, sid):
         lv, side, c = self.parse(sid)
         return (c * W, lv * H + 0.1, side * Z)

@@ -43,6 +43,11 @@ class Tower(Garage):
         p = self.slot_pallet[sid]
         return p is not None and self.car[p] is not None
 
+    def car_in(self, sid):
+        p = self.slot_pallet[sid]
+        return self.car[p] if p is not None else None
+
+
     def lv_side(self, sid):
         return int(sid[:-1]), (-1 if sid[-1] == "左" else 1)
 

@@ -43,6 +43,11 @@ class SimpleLift(Garage):
         c, d = self._where(sid)
         return d[c] is not None
 
+    def car_in(self, sid):
+        c, d = self._where(sid)
+        return d[c]
+
+
     @staticmethod
     def x(c):
         return (c - (COLS - 1) / 2) * W

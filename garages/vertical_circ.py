@@ -41,6 +41,10 @@ class VerticalCirc(Garage):
     def has_car(self, sid):
         return self.car[int(sid)] is not None
 
+    def car_in(self, sid):
+        return self.car[int(sid)]
+
+
     def s_of(self, i):
         return ((i - 1) * SP + self.offset) % P_LEN
 

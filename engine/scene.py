@@ -238,8 +238,38 @@ class Ctx:
         return self.part(name, pos, shapes, heading)
 
     def spawn_car(self, a):
+        if a["name"] in self.parts:      # 司机视角下车已经提前开到入口等着了，这里只校正位置
+            self.parts[a["name"]].set_pose(a["pos"], a.get("heading", 0))
+            return
         idx = int(a["name"][3:])
         self.car(a["name"], a["pos"], idx, a.get("heading", 0))
+
+    # ---- 司机视角用：车牌标签、高亮框 ----
+    def tag(self, name, text):
+        """给一个可动物体头顶加一个标签（比如"您的车 沪A·52731"），跟着它一起动。"""
+        if name in self.parts:
+            np = self._label(self.parts[name].node, (0, 2.0, 0), text, 13, boxed=True)
+            np.node().setCardColor(1, 0.92, 0.45, 0.95)
+            return np
+
+    def highlight(self, pos=None, follow=None, size=(2.9, 2.0, 5.4)):
+        """半透明的黄色框，标出目标车位（pos）或者跟着某辆车走（follow）。每帧由 pulse() 让它闪。"""
+        self.clear_highlight()
+        parent = self.parts[follow].node if follow in self.parts else self.root
+        self.hl = self._box(parent, (0, size[1] / 2, 0) if follow else
+                            (pos[0], pos[1] + size[1] / 2, pos[2]), size, (1, 0.8, 0.1), 0.35)
+        self.hl.setLightOff()
+
+    def clear_highlight(self):
+        hl = getattr(self, "hl", None)
+        if hl is not None and not hl.isEmpty():
+            hl.removeNode()
+        self.hl = None
+
+    def pulse(self, t):
+        hl = getattr(self, "hl", None)
+        if hl is not None and not hl.isEmpty():
+            hl.setAlphaScale(0.45 + 0.4 * math.sin(t * 5))
 
     def remove(self, name):
         p = self.parts.pop(name, None)
@@ -251,6 +281,7 @@ class Ctx:
         self.static_root.flattenStrong()
 
     def clear(self):
+        self.hl = None
         self.root.removeNode()
         self._new_root()
 
