@@ -9,6 +9,7 @@ from direct.gui.DirectGui import DirectButton, DirectFrame
 from direct.gui.OnscreenText import OnscreenText
 from panda3d.core import TextNode
 
+from engine import logbook
 from engine.fonts import wrap
 
 SCREEN = (0.09, 0.14, 0.25, 1)
@@ -19,6 +20,14 @@ BAR_FG = (0.3, 0.78, 0.45, 1)
 PRIMARY = ((0.2, 0.55, 0.95, 1), (0.12, 0.4, 0.8, 1), (0.32, 0.64, 1, 1), (0.4, 0.4, 0.4, 1))
 SECOND = ((0.3, 0.36, 0.48, 1), (0.22, 0.27, 0.38, 1), (0.38, 0.45, 0.6, 1), (0.4, 0.4, 0.4, 1))
 CHIP = ((0.93, 0.95, 1, 1), (0.75, 0.82, 0.95, 1), (1, 1, 0.85, 1), (0.6, 0.6, 0.6, 1))
+MINE = ((1, 0.92, 0.45, 1), (0.9, 0.78, 0.3, 1), (1, 0.96, 0.65, 1), (0.6, 0.6, 0.6, 1))   # 和车顶"您的车"标签同色
+
+
+def _logged(text, cb):
+    def run():
+        logbook.note("点击终端按钮 %s" % text)
+        cb()
+    return run
 INSET = 0.03
 
 
@@ -46,17 +55,19 @@ class Kiosk:
 
     # ---- 内容 ----
     def show(self, heading, body="", buttons=(), chips=(), progress=None):
-        """buttons: [(文字, 回调, 是否主按钮)]；chips: [(文字, 回调)]，排成网格；progress: None 或 (0~1, 说明)。"""
+        """buttons: [(文字, 回调, 是否主按钮)]；chips: [(文字, 回调[, 是否标黄])]，排成网格；
+        progress: None 或 (0~1, 说明)。"""
         self._heading_text, self._body_text = heading, body
         for b in self.buttons + self.chips:
             b.destroy()
-        self.buttons = [DirectButton(parent=self.frame, text=t, command=cb, scale=0.042, relief=DGG.FLAT,
+        self.buttons = [DirectButton(parent=self.frame, text=t, command=_logged(t, cb), scale=0.042, relief=DGG.FLAT,
                                      frameColor=PRIMARY if main else SECOND, text_fg=(1, 1, 1, 1),
                                      text_font=self.bold if main else self.font, pad=(0.6, 0.38))
                         for t, cb, main in buttons]
-        self.chips = [DirectButton(parent=self.frame, text=t, command=cb, scale=0.034, relief=DGG.FLAT,
-                                   frameColor=CHIP, text_fg=(0.1, 0.12, 0.2, 1), text_font=self.font)
-                      for t, cb in chips]
+        self.chips = [DirectButton(parent=self.frame, text=c[0], command=_logged(c[0], c[1]), scale=0.034,
+                                   relief=DGG.FLAT, frameColor=MINE if c[2:] and c[2] else CHIP,
+                                   text_fg=(0.1, 0.12, 0.2, 1), text_font=self.font)
+                      for c in chips]
         self.set_progress(progress)
 
     def set_progress(self, progress):

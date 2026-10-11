@@ -127,6 +127,7 @@ class Ctx:
         self.label_root = self.root.attachNewNode("labels")
         self.parts = {}
         self.labels = []          # (节点, 字高像素)
+        self.tags = {}            # 车名 → 车顶标签节点
 
     def update_labels(self, cam, px_to_world):
         """每帧调用：按离相机的距离缩放标签，让它在屏幕上的大小固定（和 VPython 的 label 一样）。
@@ -245,11 +246,18 @@ class Ctx:
         self.car(a["name"], a["pos"], idx, a.get("heading", 0))
 
     # ---- 司机视角用：车牌标签、高亮框 ----
-    def tag(self, name, text):
-        """给一个可动物体头顶加一个标签（比如"您的车 沪A·52731"），跟着它一起动。"""
+    def tag(self, name, text, replace=True):
+        """给一个可动物体头顶加一个标签（比如"您的车 沪A·52731"），跟着它一起动。
+        一个物体只有一个标签；replace=False 时已有标签就不动。"""
+        old = self.tags.get(name)
+        if old is not None and not old.isEmpty():
+            if not replace:
+                return old
+            old.removeNode()
         if name in self.parts:
             np = self._label(self.parts[name].node, (0, 2.0, 0), text, 13, boxed=True)
             np.node().setCardColor(1, 0.92, 0.45, 0.95)
+            self.tags[name] = np
             return np
 
     def highlight(self, pos=None, follow=None, size=(2.9, 2.0, 5.4)):
@@ -272,6 +280,7 @@ class Ctx:
             hl.setAlphaScale(0.45 + 0.4 * math.sin(t * 5))
 
     def remove(self, name):
+        self.tags.pop(name, None)
         p = self.parts.pop(name, None)
         if p:
             p.destroy()

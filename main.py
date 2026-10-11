@@ -20,6 +20,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import (AmbientLight, AntialiasAttrib, ClockObject, DirectionalLight,
                           GraphicsPipeSelection, TextNode, Vec3, WindowProperties, loadPrcFileData)
 
+from engine import logbook
 from engine.fonts import ACCENT, color_grid, load_fonts, register_styles, rich, spaced, wrap
 from engine.kiosk import Kiosk
 from engine.motion import step_duration
@@ -102,6 +103,8 @@ class App(ShowBase):
         self.setBackgroundColor(*BG)
         self.render.setAntialias(AntialiasAttrib.MMultisample)
 
+        import panda3d
+        logbook.note("Panda3D %s | 窗口 %dx%d" % (panda3d.__version__, self.win.getXSize(), self.win.getYSize()))
         self.ui_font, self.mono_font, self.bold_font = load_fonts()
         if self.ui_font:
             DGG.setDefaultFont(self.ui_font)
@@ -128,6 +131,7 @@ class App(ShowBase):
         self.choice = None          # 终端上按了哪个按钮
         self.plates = {}            # 车名 → 车牌
         self.parked_at = {}         # 车名 → 存入时刻（模拟时钟，分钟）
+        self.mine = set()           # 司机（用户）自己存进来的车；其余是其他车主的
         self.clock_min = 8 * 60
         self.rng = random.Random()
         self.intro_open = False
@@ -492,6 +496,7 @@ class App(ShowBase):
 
     # ================= 控件回调 =================
     def submit(self, cmd):
+        logbook.note("操作 %s%s" % (cmd, "（忙，忽略）" if self.job is not None else ""))
         if self.job is not None:
             self.notice = "\1red\1正在执行上一个任务，请稍等。\2"
             self.render_log()
@@ -509,6 +514,7 @@ class App(ShowBase):
         self.relayout()
 
     def set_mode(self, mode):
+        logbook.note("切换模式 %s%s" % (mode, "（忙，忽略）" if self.job is not None else ""))
         if self.job is not None:
             self.notice = "\1red\1正在执行任务，做完再切换模式。\2"
             self.render_log()
@@ -547,6 +553,7 @@ class App(ShowBase):
 
     def on_pause(self):
         self.ctl.paused = not self.ctl.paused
+        logbook.note("暂停" if self.ctl.paused else "继续")
         self.pause_btn["text"] = "继续 ▶" if self.ctl.paused else "暂停 ‖"
 
     def on_next(self):
@@ -583,6 +590,7 @@ class App(ShowBase):
 
     # ================= 命令（都是生成器：每帧推进一点，不阻塞窗口） =================
     def switch(self, i):
+        logbook.note("切换车库 %s" % ALL[i].name)
         self.garage_idx = i
         self.menu.set(i, fCommand=0)
         self.cmp_frame.hide()
@@ -607,7 +615,7 @@ class App(ShowBase):
         # 已经停在库里的车：随机给车牌和存入时刻
         self.rng = random.Random(i)
         self.clock_min = 8 * 60
-        self.plates, self.parked_at = {}, {}
+        self.plates, self.parked_at, self.mine = {}, {}, set()
         for _, name in self.cars_in_garage():
             self.plates[name] = self.new_plate()
             self.parked_at[name] = self.clock_min - self.rng.randint(30, 600)
@@ -634,6 +642,7 @@ class App(ShowBase):
         for i, s in enumerate(steps, 1):
             self.log_hint.setText(f"第 {i}/{len(steps)} 步")
             d = step_duration(s)
+            logbook.note("  步骤 %d/%d [%.1fs] %s" % (i, len(steps), d, s["text"]))
             self.log.append(f"{len(self.log) + 1}. {s['text']}" + (f" \1grey\1[{d:.1f}s]\2" if d else ""))
             self.render_log()
             ops = {a["op"] for a in s["actions"]}
@@ -742,19 +751,32 @@ class App(ShowBase):
         for name in set(self.plates) - cars:
             self.plates.pop(name)
             self.parked_at.pop(name, None)
+        self.mine &= cars
+        for name in self.mine:          # 原理演示模式里车被搬过、标签丢了的话补回来
+            self.ctx.tag(name, f"您的车 {self.plates[name]}", replace=False)
 
     def kiosk_idle(self):
         self.sync_plates()
         g = self.garage
         empty = sum(not g.has_car(s) for s in g.slots())
         self.kiosk_header()
-        self.kiosk.show("欢迎使用立体车库",
-                        f"剩余空位 {empty}/{len(g.slots())}。存车时系统自动分配车位，取车时刷卡（这里选车牌）即可。",
+        body = f"剩余空位 {empty}/{len(g.slots())}。存车时系统自动分配车位，取车时刷卡（这里选车牌）即可。"
+        if self.mine:
+            body += "\n您存的车：" + "、".join(self.my_cars_text())
+        logbook.note("终端 欢迎使用立体车库 | " + body.replace("\n", " / "))
+        self.kiosk.show("欢迎使用立体车库", body,
                         buttons=[("我要存车", lambda: self.submit(("drv_park",)), True),
                                  ("我要取车", lambda: self.submit(("drv_pick",)), True)])
         self.relayout()
 
+    def my_cars_text(self):
+        g = self.garage
+        return [f"{self.plates[name]}（{g.slot_label(sid)}）" for sid, name in self.cars_in_garage()
+                if name in self.mine]
+
     def _kiosk(self, heading, body="", buttons=(), chips=(), progress=None):
+        if progress is None or not buttons:     # 进度条每一步都会刷新，不用每次都记
+            logbook.note("终端 %s | %s" % (heading, body.replace("\n", " / ")))
         self.kiosk_header()
         self.kiosk.show(heading, body, buttons, chips, progress)
         self.relayout()
@@ -764,6 +786,7 @@ class App(ShowBase):
         if all(g.has_car(s) for s in g.slots()):
             self._kiosk("车位已满", "抱歉，现在没有空车位，请稍后再来。", [("返回", lambda: self.choose(1), True)])
             yield from self.wait_choice()
+            self.kiosk_idle()
             return
         self.clock_min += self.rng.randint(3, 25)
         # 先在副本上试算：系统会分配哪个车位、车从哪里开进来。真正确认后才改车库状态
@@ -775,7 +798,7 @@ class App(ShowBase):
         self.plates[name] = plate
         x, y, z = arrive["pos"]
         self.ctx.car(name, (x, y, z), int(name[3:]), arrive.get("heading", 0))   # 停在入口车道上等候
-        tag = self.ctx.tag(name, f"您的车 {plate}")
+        self.ctx.tag(name, f"您的车 {plate}")
         self.log = [f"一辆车开到入口，摄像头识别车牌 {plate}。"]
         self.render_log()
         self._kiosk("车辆已到达",
@@ -794,8 +817,7 @@ class App(ShowBase):
         self._kiosk(f"已为您分配：{g.slot_label(sid)}", f"预计用时 {t:.0f} 秒。目标车位已在画面里用黄色框标出。")
         yield from self.run_steps(steps, "park", driver=("park", name, sid))
         self.ctx.clear_highlight()
-        if tag is not None and not tag.isEmpty():
-            tag.removeNode()            # 车存好了，"您的车"标签就不需要了
+        self.mine.add(name)             # 车上的"您的车"标签留着，取车时一眼就能在画面里找到
         self.clock_min += t / 60
         self._kiosk("存车完成，请保管好凭证",
                     f"车牌　{plate}\n车位　{g.slot_label(sid)}\n存入　{self.clock_text(self.parked_at[name])}"
@@ -813,8 +835,17 @@ class App(ShowBase):
             self.kiosk_idle()
             return
         self.clock_min += self.rng.randint(20, 240)       # 模拟：过了一段时间，车主回来取车
-        chips = [(self.plates.get(name, name), (lambda s=sid: self.choose(s))) for sid, name in cars]
-        self._kiosk("请刷卡取车", "点您的车牌（相当于刷停车卡或扫码）。", chips=chips,
+        # 自己的车排在前面、用黄色标出（和画面里车顶的"您的车"标签同色）；其余是其他车主的车
+        cars.sort(key=lambda c: c[1] not in self.mine)
+        chips = [(self.plates.get(name, name), (lambda s=sid: self.choose(s)), name in self.mine)
+                 for sid, name in cars]
+        if self.mine:
+            body = ("您存的车：" + "、".join(self.my_cars_text()) + "\n黄色的是您的车，画面里车顶也有黄色标签。"
+                    "白色的是其他车主的车，演示时也可以点。")
+        else:
+            body = ("您还没有存过车。下面是其他车主的车（启动时就在库里），演示时可以任选一辆，"
+                    "相当于替那位车主刷卡。")
+        self._kiosk("请刷卡取车", body, chips=chips,
                     buttons=[("返回", lambda: self.choose("back"), False)])
         sid = yield from self.wait_choice()
         if sid == "back":
@@ -822,7 +853,7 @@ class App(ShowBase):
             return
         name = g.car_in(sid)
         plate = self.plates.get(name, name)
-        self.ctx.tag(name, f"您的车 {plate}")
+        self.ctx.tag(name, f"您的车 {plate}" if name in self.mine else f"取车 {plate}")
         self.ctx.highlight(follow=name)
         steps = g.request(sid)
         t = total_time(steps)
@@ -832,6 +863,7 @@ class App(ShowBase):
         self.clock_min += t / 60
         stay = self.clock_min - self.parked_at.pop(name, self.clock_min)
         self.plates.pop(name, None)
+        self.mine.discard(name)
         self._kiosk("取车完成，一路顺风",
                     f"车牌　{plate}\n停车　{int(stay // 60)} 小时 {int(stay % 60)} 分（模拟）\n等车　{t:.0f} 秒",
                     [("完成", lambda: self.choose(1), True)])
@@ -867,11 +899,15 @@ class App(ShowBase):
         self._update_drag()
         self.ctx.pulse(task.time)
         if self.win.hasSize():
-            px_h = self.win.getYSize() * (self.view_top - self.view_bottom)
-            self.ctx.update_labels(self.camera, 2 * math.tan(math.radians(self.camLens.getFov()[1] / 2)) / px_h)
+            # 标签的字号按窗口高度缩放（以 820 像素高为基准）：高分屏上界面变大了，标签也要跟着变大
+            ys = self.win.getYSize()
+            px_h = ys * (self.view_top - self.view_bottom)
+            k = max(1.0, ys / 820)
+            self.ctx.update_labels(self.camera, k * 2 * math.tan(math.radians(self.camLens.getFov()[1] / 2)) / px_h)
         try:
             if self.job is None and self.cmds:
                 self.notice = ""
+                logbook.note("开始 %s" % (self.cmds[0],))
                 self.job = self.make_job(self.cmds.pop(0))
                 next(self.job)
             elif self.job is not None:
@@ -879,11 +915,23 @@ class App(ShowBase):
         except StopIteration:
             self.job = None
             self.render_log()          # 任务结束：取消"当前步骤"的高亮
+            logbook.note("结束，车库状态：\n" + self.garage.ascii())
         except Exception:
+            logbook.note("出错：")
             traceback.print_exc()
             self.job = None
         return task.cont
 
 
 if __name__ == "__main__":
-    App().run()
+    logbook.start()
+    try:
+        App().run()
+    except SystemExit:
+        raise
+    except BaseException:
+        traceback.print_exc()
+        raise
+    finally:
+        if logbook.path:
+            print("[日志] 本次运行记录在 %s ，遇到问题把这个文件发过来。" % logbook.path)
