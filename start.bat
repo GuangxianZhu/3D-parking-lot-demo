@@ -1,11 +1,27 @@
 @echo off
 rem One-click launcher for Windows: double-click this file.
 rem First run: creates .venv next to this file and installs requirements.txt.
+rem Every run: pulls the latest code first if git is installed.
 rem Later runs: skips straight to main.py.
 rem Messages are ASCII on purpose: cmd.exe reads .bat files in the console
 rem code page, so Chinese text here would show up garbled on many systems.
 setlocal
 cd /d "%~dp0"
+
+rem Update to the latest code with "git pull" when this is a git checkout.
+rem cmd.exe reads a running .bat file line by line from disk, so if the pull
+rem changes this file, the rest of it would be read at the wrong offsets.
+rem The pull and the restart are therefore on one line (parsed as a whole),
+rem and the restarted copy skips this step via PARKING_UPDATED.
+if defined PARKING_UPDATED goto venv
+if not exist ".git" goto venv
+where git >nul 2>&1
+if errorlevel 1 goto venv
+set "PARKING_UPDATED=1"
+echo Updating to the latest version (git pull) ...
+(git pull --ff-only || echo [WARN] Update failed, starting the version you have.) & call "%~f0" %* & exit /b
+
+:venv
 
 set "VENV_PY=.venv\Scripts\python.exe"
 if exist "%VENV_PY%" goto deps
