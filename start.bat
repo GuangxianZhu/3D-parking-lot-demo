@@ -65,7 +65,11 @@ if errorlevel 1 (
 :run
 echo Starting the demo. A 3D window will open; close it to quit.
 "%VENV_PY%" main.py
-if errorlevel 1 goto fail
+if errorlevel 1 (
+    echo [ERROR] The demo stopped with an error. Please send the newest file
+    echo in the logs folder: %~dp0logs
+    goto fail
+)
 exit /b 0
 
 :fail
