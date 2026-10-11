@@ -20,6 +20,48 @@ PALLET = (0.72, 0.72, 0.68)
 STEEL = (0.25, 0.35, 0.55)
 
 
+# ---- 轿车外形（车库坐标：x 右、y 上、z 前；车头朝 -z）----
+# 侧面轮廓 (z, y)：下车身（保险杠、引擎盖、后备箱）和车舱（玻璃）各是一个凸多边形
+CAR_BODY = [(-1.90, 0.18), (1.90, 0.18), (2.04, 0.26), (2.05, 0.62), (1.95, 0.76), (1.40, 0.82),
+            (-0.60, 0.82), (-1.85, 0.72), (-2.05, 0.60), (-2.06, 0.28)]
+CAR_CABIN = [(-0.62, 0.81), (1.42, 0.81), (0.95, 1.27), (-0.10, 1.27)]
+CAR_ROOF = [(-0.12, 1.25), (0.97, 1.25), (0.93, 1.31), (-0.08, 1.31)]
+GLASS = (0.16, 0.22, 0.30)
+TIRE = (0.07, 0.07, 0.08)
+RIM = (0.78, 0.79, 0.82)
+WHEEL_R, WHEEL_Z, WHEEL_X = 0.31, 1.32, 0.70
+
+
+def car_shapes(color):
+    dark = tuple(c * 0.55 for c in color)
+    shapes = [("prism", CAR_BODY, (-0.86, 0.86), color),
+              ("prism", CAR_CABIN, (-0.72, 0.72), GLASS),             # 整个车舱是玻璃色，看起来就是车窗
+              ("prism", CAR_ROOF, (-0.70, 0.70), color),              # 车顶
+              # 车窗之间的立柱（B 柱）和窗下沿的腰线
+              ("box", (-0.725, 1.04, 0.42), (0.02, 0.46, 0.12), color),
+              ("box", (0.725, 1.04, 0.42), (0.02, 0.46, 0.12), color),
+              ("box", (-0.865, 0.62, 0), (0.02, 0.05, 3.7), dark),
+              ("box", (0.865, 0.62, 0), (0.02, 0.05, 3.7), dark),
+              # 车头：前大灯、进气格栅、车牌
+              ("box", (-0.58, 0.56, -2.06), (0.38, 0.12, 0.04), (1, 0.97, 0.8)),
+              ("box", (0.58, 0.56, -2.06), (0.38, 0.12, 0.04), (1, 0.97, 0.8)),
+              ("box", (0, 0.47, -2.075), (0.62, 0.16, 0.03), (0.12, 0.12, 0.14)),
+              ("box", (0, 0.30, -2.08), (0.44, 0.12, 0.02), (0.95, 0.95, 0.95)),
+              # 车尾：尾灯、车牌
+              ("box", (-0.60, 0.62, 2.05), (0.36, 0.11, 0.04), (0.85, 0.08, 0.08)),
+              ("box", (0.60, 0.62, 2.05), (0.36, 0.11, 0.04), (0.85, 0.08, 0.08)),
+              ("box", (0, 0.40, 2.06), (0.44, 0.12, 0.02), (0.95, 0.95, 0.95)),
+              # 后视镜
+              ("box", (-0.93, 0.92, -0.48), (0.14, 0.09, 0.14), color),
+              ("box", (0.93, 0.92, -0.48), (0.14, 0.09, 0.14), color)]
+    for z in (-WHEEL_Z, WHEEL_Z):
+        for side in (-1, 1):
+            x_in = side * WHEEL_X
+            shapes.append(("cyl", (x_in, WHEEL_R, z), (side * 0.22, 0, 0), WHEEL_R, TIRE))
+            shapes.append(("cyl", (x_in + side * 0.2, WHEEL_R, z), (side * 0.035, 0, 0), WHEEL_R * 0.58, RIM))
+    return shapes
+
+
 def to_panda(t):
     """车库坐标 (x, y上, z前) → Panda3D 坐标 (x, y里, z上)。"""
     x, y, z = t
@@ -86,8 +128,49 @@ def _make_cylinder(seg=32):
     return NodePath(node)
 
 
+def _make_prism(profile, x0, x1):
+    """侧面轮廓（车库坐标里的 (z, y) 点，凸多边形）沿 x 从 x0 拉伸到 x1 得到的柱体。
+    用来做车身、车窗这种侧面看是梯形/多边形的形状。每个面单独法线，棱角分明。"""
+    vdata = GeomVertexData("prism", GeomVertexFormat.getV3n3(), Geom.UHStatic)
+    vw, nw = GeomVertexWriter(vdata, "vertex"), GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+    k = [0]
+
+    def face(pts, n):
+        """pts: 车库坐标的凸多边形顶点；n: 外法线。按法线方向自动决定三角形绕向。"""
+        P = [to_panda(q) for q in pts]
+        N = to_panda(n)
+        for q in P:
+            vw.addData3(q)
+            nw.addData3(N)
+        for i in range(1, len(P) - 1):
+            a, b, c = 0, i, i + 1
+            if (P[b] - P[a]).cross(P[c] - P[a]).dot(N) < 0:
+                b, c = c, b
+            tris.addVertices(k[0] + a, k[0] + b, k[0] + c)
+        k[0] += len(P)
+
+    face([(x0, y, z) for z, y in profile], (-1, 0, 0))
+    face([(x1, y, z) for z, y in profile], (1, 0, 0))
+    cz = sum(z for z, _ in profile) / len(profile)
+    cy = sum(y for _, y in profile) / len(profile)
+    for i, (z0, y0) in enumerate(profile):
+        z1, y1 = profile[(i + 1) % len(profile)]
+        nz, ny = (y1 - y0), -(z1 - z0)                      # 边的法线，再翻成朝外
+        if nz * ((z0 + z1) / 2 - cz) + ny * ((y0 + y1) / 2 - cy) < 0:
+            nz, ny = -nz, -ny
+        L = math.hypot(nz, ny) or 1
+        face([(x0, y0, z0), (x1, y0, z0), (x1, y1, z1), (x0, y1, z1)], (0, ny / L, nz / L))
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("prism")
+    node.addGeom(geom)
+    return NodePath(node)
+
+
 _CUBE = None
 _CYL = None
+_PRISMS = {}
 
 
 def _protos():
@@ -156,6 +239,14 @@ class Ctx:
             np.setBin("transparent", 0)
         return np
 
+    def _prism(self, parent, profile, x0, x1, color):
+        key = (tuple(profile), x0, x1)
+        if key not in _PRISMS:
+            _PRISMS[key] = _make_prism(profile, x0, x1)
+        np = _PRISMS[key].copyTo(parent)
+        np.setColor(*color, 1)
+        return np
+
     def _cyl(self, parent, pos, axis, radius, color):
         _, cyl = _protos()
         np = cyl.copyTo(parent)
@@ -208,7 +299,8 @@ class Ctx:
 
     # ---- 可动物体 ----
     def part(self, name, pos, shapes, heading=0):
-        """shapes: [("box", 偏移, 尺寸, 颜色) | ("cyl", 偏移, 轴, 半径, 颜色) | ("label", 偏移, 文字)]
+        """shapes: [("box", 偏移, 尺寸, 颜色) | ("cyl", 偏移, 轴, 半径, 颜色) | ("label", 偏移, 文字)
+                    | ("prism", 侧面轮廓[(z, y)], (x0, x1), 颜色)]
         偏移量按朝向 0° 记录，转动时整体旋转。"""
         node = self.root.attachNewNode(name)
         for s in shapes:
@@ -218,6 +310,8 @@ class Ctx:
                 self._cyl(node, s[1], s[2], s[3], s[4])
             elif s[0] == "label":
                 self._label(node, s[1], s[2], 12, boxed=True)
+            elif s[0] == "prism":
+                self._prism(node, s[1], s[2][0], s[2][1], s[3])
         self.parts[name] = Part(node, pos, heading)
         return self.parts[name]
 
@@ -230,13 +324,9 @@ class Ctx:
         return self.part(name, pos, shapes, heading)
 
     def car(self, name, pos, idx, heading=0):
-        c = CAR_COLORS[(idx - 1) % len(CAR_COLORS)]
-        dark = tuple(x * 0.7 for x in c)
-        shapes = [("box", (0, 0.42, 0), (1.7, 0.55, 4.0), c),
-                  ("box", (0, 0.9, 0.25), (1.5, 0.45, 2.0), dark),
-                  ("box", (-0.55, 0.45, -2.0), (0.3, 0.15, 0.05), (1, 1, 0.7)),   # 车头灯：车头朝 -z
-                  ("box", (0.55, 0.45, -2.0), (0.3, 0.15, 0.05), (1, 1, 0.7))]
-        return self.part(name, pos, shapes, heading)
+        """一辆轿车：车头朝 -z，长约 4.1 m、宽 1.8 m（含轮子）、高 1.3 m。
+        原点在车底中心的地面上，和原来的方块车占的空间差不多，所以车库里的尺寸不用改。"""
+        return self.part(name, pos, car_shapes(CAR_COLORS[(idx - 1) % len(CAR_COLORS)]), heading)
 
     def spawn_car(self, a):
         if a["name"] in self.parts:      # 司机视角下车已经提前开到入口等着了，这里只校正位置
