@@ -62,6 +62,11 @@ class Stacker(Garage):
         p = self.slot_pallet[sid]
         return p is not None and self.car[p] is not None
 
+    def car_in(self, sid):
+        p = self.slot_pallet[sid]
+        return self.car[p] if p is not None else None
+
+
     def pos(self, sid):
         side, c, lv = self.loc[sid]
         return (c * W, lv * H + 0.1, side * Z)

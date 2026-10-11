@@ -4,7 +4,6 @@
    （这能抓住"逻辑说车板到了 A，动画却把它画到了 B"这类错误）。
 运行：python -m tests.test_garages
 """
-import math
 import random
 
 from engine.motion import apply_step
@@ -37,6 +36,9 @@ def run(cls, n=1500, seed=0):
             poses = apply_step(poses, st)
         times[kind].append(total_time(steps))
         g.check()
+        held = [g.car_in(s) for s in g.slots()]
+        assert [c is not None for c in held] == [g.has_car(s) for s in g.slots()], cls.name
+        assert sorted(c for c in held if c) == sorted(k for k in g.poses() if k[:3] == "car" and k[3:].isdigit()), cls.name
         want = g.poses()
         assert set(want) == set(poses), (cls.name, set(want) ^ set(poses))
         for k, (p, h) in want.items():

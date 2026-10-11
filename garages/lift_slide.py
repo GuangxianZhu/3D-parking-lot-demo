@@ -40,6 +40,10 @@ class LiftSlide(Garage):
     def has_car(self, sid):
         return self.car[int(sid)] is not None
 
+    def car_in(self, sid):
+        return self.car[int(sid)]
+
+
     def locate(self, pid):
         for lv, row in enumerate(self.grid):
             if pid in row:

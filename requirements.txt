@@ -1,4 +1,2 @@
-vpython>=7.6
-# vpython imports pkg_resources, which setuptools removed in 82;
-# Python 3.12+ venvs also ship without setuptools at all.
-setuptools<82
+# Panda3D 1.10.16 has wheels for Python 3.8 - 3.14 on Windows, macOS and Linux.
+panda3d>=1.10.16,<1.11

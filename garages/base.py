@@ -70,6 +70,10 @@ class Garage:
     def has_car(self, sid):
         raise NotImplementedError
 
+    def car_in(self, sid):
+        """这个车位上停的是哪辆车（名字），没车返回 None。取车时按车牌找车位用，只读。"""
+        raise NotImplementedError
+
     def park(self, sid, steps):
         raise NotImplementedError
 
