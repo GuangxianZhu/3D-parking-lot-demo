@@ -6,9 +6,11 @@
 """
 from panda3d.core import NodePath, TextNode
 
+import os
 import re
+import unicodedata
 
-from engine.fonts import color_grid, load_fonts, wrap
+from engine.fonts import BUNDLED, _open, color_grid, has_chinese, load_fonts, wrap
 from garages import ALL
 from engine.motion import rot_y
 from engine.scene import Ctx, to_panda
@@ -63,6 +65,23 @@ def test_color_grid_only_adds_color():
         colored = color_grid(raw)
         assert re.sub("\x01[^\x01]*\x01|\x02", "", colored) == raw.replace("│", "|"), cls.name
         assert "\1car\1" in colored, cls.name
+
+
+def test_bundled_font_covers_repo_text():
+    """自带字体是子集，代码里新写的字如果不在子集里，界面上那个字会变成方块。"""
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    chars = set()
+    for p in glob.glob(os.path.join(root, "**", "*.py"), recursive=True):
+        with open(p, encoding="utf-8") as fh:
+            chars |= {c for c in fh.read() if ord(c) > 0x7f and unicodedata.category(c)[0] != "C"}
+    for name in ("NotoSansSC-Regular.otf", "NotoSansSC-Bold.otf", "NotoSansMonoCJKsc-Regular.otf"):
+        font = _open(os.path.join(BUNDLED, name), 0)
+        assert font is not None and has_chinese(font), name
+        tn = TextNode("t")
+        tn.setFont(font)
+        missing = sorted(c for c in chars if not tn.hasCharacter(c))
+        assert not missing, "%s 缺字：%s" % (name, "".join(missing))
 
 
 if __name__ == "__main__":

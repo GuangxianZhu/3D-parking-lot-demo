@@ -1,18 +1,24 @@
 """中文字体和简单富文本。
 
-Panda3D 自带的默认字体只有英文字母，中文会显示成方块，所以要从系统里找一个中文字体。
+Panda3D 自带的默认字体只有英文字母，中文会显示成方块，所以必须给它一个中文字体。
+优先用仓库 fonts/ 里自带的思源黑体（Noto Sans SC）子集，这样不依赖系统装了什么字体；
+自带字体读不到时，才去系统里找。
 等宽字体用来画状态图和对比表：状态图是用空格对齐的，比例字体会对不齐。
 """
 import os
 import re
 import sys
 
-from panda3d.core import DynamicTextFont, Filename, TextProperties, TextPropertiesManager
+from panda3d.core import (DynamicTextFont, Filename, TextNode, TextProperties, TextPropertiesManager,
+                          VirtualFileMountRamdisk, VirtualFileSystem)
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+BUNDLED = os.path.join(os.path.dirname(HERE), "fonts")
 WIN_FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
 
-# (文件, TTC 里的第几个字体)。按顺序找，第一个存在的就用。
+# (文件, TTC 里的第几个字体)。按顺序找，第一个能显示中文的就用。
 UI_FONTS = [
+    (os.path.join(BUNDLED, "NotoSansSC-Regular.otf"), 0),   # 随仓库自带
     (os.path.join(WIN_FONTS, "msyh.ttc"), 0),        # 微软雅黑
     (os.path.join(WIN_FONTS, "msyh.ttf"), 0),
     (os.path.join(WIN_FONTS, "simhei.ttf"), 0),      # 黑体
@@ -23,8 +29,9 @@ UI_FONTS = [
     ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
     ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
 ]
-# 粗体：只用于标题和强调。Linux 上一般没有中文粗体，找不到就只用颜色强调
+# 粗体：只用于标题和强调。找不到就只用颜色强调
 BOLD_FONTS = [
+    (os.path.join(BUNDLED, "NotoSansSC-Bold.otf"), 0),
     (os.path.join(WIN_FONTS, "msyhbd.ttc"), 0),      # 微软雅黑 粗体
     (os.path.join(WIN_FONTS, "msyhbd.ttf"), 0),
     ("/System/Library/Fonts/PingFang.ttc", 0),
@@ -32,6 +39,7 @@ BOLD_FONTS = [
 ]
 # 等宽：英文半角、汉字正好两个半角宽
 MONO_FONTS = [
+    (os.path.join(BUNDLED, "NotoSansMonoCJKsc-Regular.otf"), 0),
     (os.path.join(WIN_FONTS, "simsun.ttc"), 1),      # 新宋体 NSimSun
     (os.path.join(WIN_FONTS, "simhei.ttf"), 0),      # 黑体本身就是等宽的
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 7),   # Noto Sans Mono CJK SC
@@ -39,26 +47,66 @@ MONO_FONTS = [
     ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 1),
 ]
 
+PROBE = "车库存取"      # 用这几个字检查字体里到底有没有中文
+_RAM = "/_fonts"
+_mounted = False
+
+
+def _open(path, idx):
+    """先用 Python 把字体文件读进内存，再放进 Panda3D 的内存盘里加载。
+    这样绕开了 Panda3D 自己的路径处理：路径里有中文、空格、盘符时也不会读失败。"""
+    global _mounted
+    vfs = VirtualFileSystem.getGlobalPtr()
+    if not _mounted:
+        vfs.mount(VirtualFileMountRamdisk(), _RAM, 0)
+        _mounted = True
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    name = "%s/%d_%s" % (_RAM, idx, os.path.basename(path))
+    if not vfs.exists(Filename(name)):
+        vfs.writeFile(Filename(name), data, False)
+    font = DynamicTextFont(Filename(name), idx)
+    if not font.isValid():
+        return None
+    font.setPixelsPerUnit(48)             # 必须在第一次画字之前设置
+    font.setPageSize(1024, 1024)          # 汉字多，纹理页大一点
+    return font
+
+
+def has_chinese(font):
+    tn = TextNode("probe")
+    tn.setFont(font)
+    return all(tn.hasCharacter(ch) for ch in PROBE)
+
 
 def _load(candidates):
+    """返回 (字体, 文件路径)；都不行时返回 (None, None)。"""
     for path, idx in candidates:
-        if os.path.exists(path):
-            font = DynamicTextFont(Filename.fromOsSpecific(path), idx)
-            if font.isValid():
-                font.setPixelsPerUnit(48)
-                font.setPageSize(1024, 1024)      # 汉字多，纹理页大一点
-                return font
-    return None
+        if not os.path.exists(path):
+            continue
+        font = _open(path, idx)
+        if font is None or not has_chinese(font):
+            print("[字体] %s 读不出中文，跳过" % path, file=sys.stderr)
+            continue
+        return font, path
+    return None, None
 
 
 def load_fonts():
-    """返回 (界面字体, 等宽字体, 粗体或 None)。找不到中文字体时打印提示，界面中文会显示成方块。"""
-    ui = _load(UI_FONTS)
-    mono = _load(MONO_FONTS) or ui
-    bold = _load(BOLD_FONTS)
+    """返回 (界面字体, 等宽字体, 粗体或 None)。"""
+    ui, ui_path = _load(UI_FONTS)
+    mono, _ = _load(MONO_FONTS)
+    bold, _ = _load(BOLD_FONTS)
     if ui is None:
-        print("[警告] 没找到中文字体，界面上的中文会显示成方块。", file=sys.stderr)
-    return ui, mono, bold
+        print("\n[警告] 没找到能显示中文的字体，界面上的中文会显示成方块。\n"
+              "       请确认 fonts 文件夹还在（应和 main.py 放在同一层），里面有 NotoSansSC-Regular.otf。\n",
+              file=sys.stderr)
+    else:
+        print("[字体] 使用 %s" % ui_path)
+    return ui, mono or ui, bold
 
 
 def spaced(font, line_height):
