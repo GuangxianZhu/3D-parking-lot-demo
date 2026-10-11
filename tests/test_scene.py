@@ -6,7 +6,10 @@
 """
 from panda3d.core import NodePath, TextNode
 
-from engine.fonts import load_fonts, wrap
+import re
+
+from engine.fonts import color_grid, load_fonts, wrap
+from garages import ALL
 from engine.motion import rot_y
 from engine.scene import Ctx, to_panda
 
@@ -39,7 +42,7 @@ def test_box_size_axes():
 
 
 def test_wrap_cjk():
-    ui, _ = load_fonts()
+    ui = load_fonts()[0]
     tn = TextNode("t")
     if ui:
         tn.setFont(ui)
@@ -50,6 +53,16 @@ def test_wrap_cjk():
     assert "".join(lines).replace(" ", "") == text.replace(" ", "")
     styled = wrap("\1b\1重点\2说明" * 5, tn, 6)
     assert styled.count("\1b\1") == 5 and styled.count("\2") == 5
+
+
+
+def test_color_grid_only_adds_color():
+    """状态图上色后，去掉样式标记应该和原文一字不差（除了把"│"换成"|"）。"""
+    for cls in ALL:
+        raw = cls().ascii()
+        colored = color_grid(raw)
+        assert re.sub("\x01[^\x01]*\x01|\x02", "", colored) == raw.replace("│", "|"), cls.name
+        assert "\1car\1" in colored, cls.name
 
 
 if __name__ == "__main__":

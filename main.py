@@ -19,7 +19,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import (AmbientLight, AntialiasAttrib, ClockObject, DirectionalLight,
                           GraphicsPipeSelection, TextNode, Vec3, WindowProperties, loadPrcFileData)
 
-from engine.fonts import load_fonts, register_styles, rich, wrap
+from engine.fonts import ACCENT, color_grid, load_fonts, register_styles, rich, spaced, wrap
 from engine.motion import step_duration
 from engine.scene import Ctx, to_panda
 from garages import ALL
@@ -37,16 +37,24 @@ audio-library-name null
 
 # ---- 版面（单位是 aspect2d：窗口高度 = 2） ----
 TOOLBAR_H = 0.25          # 顶部工具栏高度
-PANEL_W = 1.32            # 右侧说明栏宽度
+PANEL_W = 1.40            # 右侧说明栏宽度
 PAD = 0.035
+LOG_H = 0.46              # 3D 画面下方"执行步骤"条的高度
+GAP = 0.018               # 说明栏里卡片之间的间距
+CARD_PAD = 0.024          # 卡片内边距
+STRIPE = 0.009            # 卡片左边那条蓝色竖线的宽度
+CARD_BG = (1, 1, 1, 1)
+GRID_BG = (0.955, 0.96, 0.97, 1)
 BG = (0.92, 0.94, 0.97, 1)
 BAR_BG = (0.83, 0.86, 0.91, 1)
-PANEL_BG = (0.98, 0.98, 0.99, 1)
+PANEL_BG = (0.9, 0.915, 0.94, 1)
 BTN = dict(relief=DGG.FLAT, frameColor=((0.97, 0.97, 0.98, 1), (0.75, 0.82, 0.95, 1),
                                         (0.88, 0.92, 1, 1), (0.8, 0.8, 0.8, 1)),
            pad=(0.35, 0.3), text_fg=(0.1, 0.1, 0.1, 1), pressEffect=1)
 SLOT_FULL = ((0.75, 0.9, 0.75, 1), (0.55, 0.8, 0.55, 1), (0.82, 0.95, 0.82, 1), (0.8, 0.8, 0.8, 1))
 SLOT_EMPTY = ((0.95, 0.95, 0.95, 1), (0.75, 0.82, 0.95, 1), (0.88, 0.92, 1, 1), (0.8, 0.8, 0.8, 1))
+INNER_W = PANEL_W - 2 * GAP - STRIPE - 2 * CARD_PAD    # 卡片里文字的可用宽度
+SLOT_COLS = 6
 VIEWS = {"正面": (0, -0.12, -1), "侧面": (-1, -0.15, -0.05), "俯视": (0, -1, -0.25)}
 FOV = 50
 
@@ -89,11 +97,13 @@ class App(ShowBase):
         self.setBackgroundColor(*BG)
         self.render.setAntialias(AntialiasAttrib.MMultisample)
 
-        self.ui_font, self.mono_font = load_fonts()
+        self.ui_font, self.mono_font, self.bold_font = load_fonts()
         if self.ui_font:
             DGG.setDefaultFont(self.ui_font)
             TextNode.setDefaultFont(self.ui_font)
-        register_styles()
+        self.body_font = spaced(self.ui_font, 1.5)      # 说明栏正文：行距加大
+        self.grid_font = spaced(self.mono_font, 1.3)
+        register_styles(self.bold_font)
         self._lights()
 
         self.ctx = Ctx(self.render, self.ui_font)
@@ -108,7 +118,7 @@ class App(ShowBase):
         self.notice = ""
         self.cam_state = None
         self.drag = None
-        self.view_right, self.view_top = 0.6, 0.9
+        self.view_right, self.view_top, self.view_bottom, self.view_w = 0.6, 0.9, 0.2, 1.8
 
         self._build_toolbar()
         self._build_panel()
@@ -143,11 +153,14 @@ class App(ShowBase):
             return
         aspect = w / h
         right = max(0.3, 1 - PANEL_W / (2 * aspect))
-        top = 1 - TOOLBAR_H / 2
-        self.cam.node().getDisplayRegion(0).setDimensions(0, right, 0, top)
-        self.camLens.setAspectRatio((w * right) / (h * top))
+        top, bottom = 1 - TOOLBAR_H / 2, LOG_H / 2
+        self.cam.node().getDisplayRegion(0).setDimensions(0, right, bottom, top)
+        self.camLens.setAspectRatio((w * right) / (h * (top - bottom)))
         self.camLens.setMinFov(FOV)
-        self.view_right, self.view_top = right, top
+        self.view_right, self.view_top, self.view_bottom = right, top, bottom
+        self.view_w = 2 * aspect - PANEL_W          # 3D 画面的宽度（aspect2d 单位）
+        if getattr(self, "garage", None) is not None:
+            self.relayout()                          # 宽度变了，步骤条要重新折行
 
     # ================= 顶部工具栏 =================
     def _flow(self, parent, x, y, widget, gap=0.02):
@@ -215,76 +228,132 @@ class App(ShowBase):
         self._flow(bar, x, y2, self.pause_btn)
 
     # ================= 右侧说明栏 =================
-    def _text(self, scale, font=None, fg=(0.1, 0.1, 0.1, 1)):
+    def _text(self, scale, font=None, fg=(0.12, 0.12, 0.14, 1)):
         return OnscreenText(parent=self.panel, text="", scale=scale, align=TextNode.ALeft,
-                            fg=fg, font=font or self.ui_font, mayChange=True)
+                            fg=fg, font=font or self.body_font, mayChange=True)
+
+    def _header(self, text):
+        return OnscreenText(parent=self.panel, text=text, scale=0.042, align=TextNode.ALeft, fg=ACCENT,
+                            font=self.bold_font or self.ui_font, mayChange=True)
 
     @staticmethod
-    def _set_wrapped(ost, text):
-        """按说明栏宽度自动折行后再显示。"""
-        ost.setText(wrap(text, ost.textNode, (PANEL_W - 2 * PAD) / ost.getScale()[0]))
+    def _set_wrapped(ost, text, width=INNER_W):
+        """按卡片宽度自动折行后再显示（留 3% 余量给粗体字）。"""
+        ost.setText(wrap(text, ost.textNode, width * 0.97 / ost.getScale()[0]))
 
     def _build_panel(self):
+        """右侧说明栏：几张白色卡片从上往下排——说明、车位、当前状态、执行步骤，最下面是统计。"""
         self.panel = DirectFrame(parent=self.a2dTopRight, frameColor=PANEL_BG,
                                  frameSize=(-PANEL_W, 0, -2, -TOOLBAR_H))
-        self.x0 = -PANEL_W + PAD
-        self.title_txt = self._text(0.052, fg=(0.1, 0.15, 0.3, 1))
-        self.intro_txt = self._text(0.036)
-        self.slot_hdr = self._text(0.036)
-        self._set_wrapped(self.slot_hdr, "\1b\1车位\2　绿色 ● 表示有车。点一下：有车就取，没车就存到这里。")
-        self.grid_hdr = self._text(0.036)
-        self.grid_hdr.setText("\1b\1当前状态\2")
-        self.grid_txt = self._text(0.034, font=self.mono_font, fg=(0.15, 0.15, 0.15, 1))
-        self.log_hdr = self._text(0.036)
-        self.log_hdr.setText("\1b\1执行步骤\2")
-        self.log_txt = self._text(0.034)
-        self.stats_txt = OnscreenText(parent=self.a2dBottomRight, text="", scale=0.034,
-                                      align=TextNode.ALeft, fg=(0.1, 0.1, 0.1, 1), mayChange=True)
-        self.slot_area_h = 0
+        self.cards = {}
+        # 执行步骤放在 3D 画面正下方：看动画时眼睛不用跑到右边去找说明，而且横向更宽、折行更少
+        self.log_strip = DirectFrame(parent=self.a2dBottomLeft, frameColor=PANEL_BG)
+        for name in ("intro", "slots", "grid", "stats", "log"):
+            parent = self.log_strip if name == "log" else self.panel
+            card = DirectFrame(parent=parent, frameColor=CARD_BG)
+            stripe = DirectFrame(parent=parent, frameColor=ACCENT)
+            self.cards[name] = (card, stripe)
+        self.grid_bg = DirectFrame(parent=self.panel, frameColor=GRID_BG)
+        self.x0 = -PANEL_W + GAP + STRIPE + CARD_PAD
+        self.title_txt = OnscreenText(parent=self.panel, text="", scale=0.05, align=TextNode.ALeft,
+                                      fg=(0.08, 0.12, 0.25, 1), font=self.bold_font or self.ui_font,
+                                      mayChange=True)
+        self.intro_txt = self._text(0.037)
+        self.slot_hdr = self._header("车位")
+        self.slot_hint = self._text(0.032, fg=(0.42, 0.42, 0.45, 1))
+        self.slot_hint.setText("绿色 = 有车。点一下：有车就取，没车就存到这里")
+        self.grid_hdr = self._header("当前状态")
+        self.grid_hint = self._text(0.032, fg=(0.42, 0.42, 0.45, 1))
+        self.grid_hint.setText("\1car\1■\2 有车　\1empty\1■\2 空")
+        self.grid_txt = self._text(0.037, font=self.grid_font, fg=(0.2, 0.2, 0.22, 1))
+        self.log_hdr = self._header("执行步骤")
+        self.log_hint = self._text(0.032, fg=(0.42, 0.42, 0.45, 1))
+        self.log_txt = self._text(0.036)
+        for ost in (self.log_hdr, self.log_hint, self.log_txt):
+            ost.reparentTo(self.log_strip)
+        self.stats_txt = self._text(0.035)
 
     @staticmethod
     def _height(ost):
         tn = ost.textNode
         return tn.getNumRows() * tn.getLineHeight() * ost.getScale()[0]
 
+    def _place_card(self, name, top, bottom, left=-PANEL_W + GAP, right=-GAP):
+        card, stripe = self.cards[name]
+        card["frameSize"] = (left, right, bottom, top)
+        stripe["frameSize"] = (left, left + STRIPE, bottom, top)
+
+    def _put(self, ost, y, x=None):
+        """把一段文字的第一行顶边放在 y，返回这段文字的底边。"""
+        sc = ost.getScale()[0]
+        ost.setPos(self.x0 if x is None else x, y - sc * 0.95)
+        return y - self._height(ost) + sc * 0.25
+
+    def _put_header(self, hdr, hint, y, x=None):
+        x = self.x0 if x is None else x
+        hdr.setPos(x, y - 0.042 * 0.95)
+        hint.setPos(x + hdr.textNode.getWidth() * 0.042 + 0.03, y - 0.042 * 0.95)
+        return y - 0.042 * 1.35
+
     def relayout(self):
-        """按各段文字的实际行数从上往下排，日志区占用剩下的空间。"""
+        """按各段文字的实际行数从上往下排，日志卡片占用剩下的空间。"""
         x0 = self.x0
-        y = -TOOLBAR_H - PAD
-        for ost, gap in ((self.title_txt, 0.02), (self.intro_txt, 0.03)):
-            sc = ost.getScale()[0]
-            ost.setPos(x0, y - sc * 0.9)
-            y -= self._height(ost) + gap
-        self.slot_hdr.setPos(x0, y - 0.036 * 0.9)
-        y -= 0.036 * 1.3 + 0.015
-        bw, bh = (PANEL_W - 2 * PAD) / 6, 0.068
+        # 说明
+        top = y = -TOOLBAR_H - GAP
+        y = self._put(self.title_txt, y - CARD_PAD) - 0.024
+        y = self._put(self.intro_txt, y) - CARD_PAD
+        self._place_card("intro", top, y)
+        # 车位按钮
+        top = y = y - GAP
+        y = self._put_header(self.slot_hdr, self.slot_hint, y - CARD_PAD) - 0.01
+        bw, bh = INNER_W / SLOT_COLS, 0.072
         for i, (_, b) in enumerate(self.slot_buttons):
-            r, c = divmod(i, 6)
+            r, c = divmod(i, SLOT_COLS)
             b.setPos(x0 + c * bw + bw / 2, 0, y - r * bh - bh / 2 - 0.012)
-        rows = math.ceil(len(self.slot_buttons) / 6)
-        y -= rows * bh + 0.035
-        self.grid_hdr.setPos(x0, y - 0.036 * 0.9)
-        y -= 0.036 * 1.3 + 0.01
-        self.grid_txt.setPos(x0, y - 0.034 * 0.9)
-        y -= self._height(self.grid_txt) + 0.03
-        self.log_hdr.setPos(x0, y - 0.036 * 0.9)
-        y -= 0.036 * 1.3 + 0.01
-        self.log_top = y
-        self.log_txt.setPos(x0, y - 0.034 * 0.9)
-        self.stats_txt.setPos(x0, PAD + self._height(self.stats_txt) - 0.034 * 0.9)
+        y -= math.ceil(len(self.slot_buttons) / SLOT_COLS) * bh + CARD_PAD
+        self._place_card("slots", top, y)
+        # 当前状态
+        top = y = y - GAP
+        y = self._put_header(self.grid_hdr, self.grid_hint, y - CARD_PAD) - 0.012
+        gtop = y
+        y = self._put(self.grid_txt, y - 0.018) - 0.012
+        self.grid_bg["frameSize"] = (x0 - 0.012, -GAP - CARD_PAD + 0.012, y, gtop)
+        # 统计（贴底）；状态卡片往下撑到统计卡片上面，不留空白
+        bottom = -2 + GAP
+        stats_top = bottom + self._height(self.stats_txt) - 0.035 * 0.25 + 2 * CARD_PAD
+        self._put(self.stats_txt, stats_top - CARD_PAD)
+        self._place_card("stats", stats_top, bottom)
+        self._place_card("grid", top, min(y - CARD_PAD, stats_top - GAP))
+        # 执行步骤：3D 画面下方的横条
+        self.log_strip["frameSize"] = (0, self.view_w, 0, LOG_H)
+        lx = GAP + STRIPE + CARD_PAD
+        self._place_card("log", LOG_H - GAP * 0.5, GAP, GAP, self.view_w - GAP * 0.5)
+        y = self._put_header(self.log_hdr, self.log_hint, LOG_H - GAP * 0.5 - CARD_PAD, lx) - 0.008
+        self.log_top, self.log_bottom = y, GAP + CARD_PAD * 0.6
+        self.log_txt.setPos(lx, y - 0.036 * 0.95)
+        self.log_w = self.view_w - lx - GAP - CARD_PAD
         self.render_log()
 
     def render_log(self, extra=""):
-        """日志放不下时，从最早的一条开始省略，保证最新的几步总能看到。"""
-        bottom = -2 + PAD + self._height(self.stats_txt) + 0.03
+        """日志放不下时，从最早的一条开始省略，保证最新的几步总能看到。
+        正在执行的那一步用深蓝粗体，做完的步骤变灰，眼睛一下就能找到"现在到哪了"。"""
         tn = self.log_txt.textNode
-        rows_fit = max(1, int((self.log_top - bottom) / (tn.getLineHeight() * 0.034)))
-        lines = ([self.notice] if self.notice else []) + self.log + ([extra] if extra else [])
+        rows_fit = max(1, int((self.log_top - self.log_bottom) / (tn.getLineHeight() * 0.036)))
+        n = len(self.log)
+        styled = []
+        for i, line in enumerate(self.log):
+            if self.job is not None and i == n - 1:
+                styled.append("\1cur\1▶ " + line + "\2")
+            elif self.job is not None:
+                styled.append("\1done\1" + line + "\2")
+            else:
+                styled.append(line)
+        lines = ([self.notice] if self.notice else []) + styled + ([extra] if extra else [])
         skip = 0
         while True:
             shown = lines[skip:]
             text = ("\1grey\1（前 %d 步已省略）\2\n" % skip if skip else "") + "\n".join(shown)
-            self._set_wrapped(self.log_txt, text)
+            self._set_wrapped(self.log_txt, text, self.log_w)
             if tn.getNumRows() <= rows_fit or len(shown) <= 1:
                 break
             skip += 1
@@ -311,7 +380,7 @@ class App(ShowBase):
         if not self.mouseWatcherNode.hasMouse():
             return False
         m = self.mouseWatcherNode.getMouse()
-        return (m.x + 1) / 2 < self.view_right and (m.y + 1) / 2 < self.view_top
+        return (m.x + 1) / 2 < self.view_right and self.view_bottom < (m.y + 1) / 2 < self.view_top
 
     def _drag_start(self, mode):
         if self._in_view() and self.cmp_frame.isHidden():
@@ -356,7 +425,7 @@ class App(ShowBase):
         self.cam_state = {
             "center": to_panda(cam["center"]),
             # VPython 的 range 是中心到画面边缘的距离，换成相机离中心多远
-            "dist": cam["range"] / math.tan(math.radians(FOV / 2)) * 1.15,
+            "dist": cam["range"] / math.tan(math.radians(FOV / 2)) * 1.0,
             "h": math.degrees(math.atan2(-f.x, f.y)),
             "p": math.degrees(math.asin(max(-1, min(1, f.z)))),
         }
@@ -397,17 +466,17 @@ class App(ShowBase):
             b["frameColor"] = SLOT_FULL if full else SLOT_EMPTY
 
     def show_grid(self, text):
-        self.grid_txt.setText(text)
+        self.grid_txt.setText(color_grid(text))
         self.relayout()
 
     def show_stats(self, last=None):
         h = self.history
         avg = lambda xs: f"{sum(xs) / len(xs):.1f}s" if xs else "—"
         cars = sum(self.garage.has_car(s) for s in self.garage.slots())
-        s = f"\1b\1在库\2 {cars}/{len(self.garage.slots())} 辆　"
+        s = f"在库 \1b\1{cars}/{len(self.garage.slots())}\2 辆"
         if last is not None:
-            s += f"\1b\1本次模拟耗时\2 {last:.1f}s　"
-        s += f"平均存车 {avg(h['park'])}，平均取车 {avg(h['retrieve'])}"
+            s += f"　　本次耗时 \1b\1{last:.1f}s\2"
+        s += f"　　平均存车 \1b\1{avg(h['park'])}\2　平均取车 \1b\1{avg(h['retrieve'])}\2"
         s += f"\n\1grey\1速度是示意值：{self.garage.speed_note}\2"
         self._set_wrapped(self.stats_txt, s)
         self.relayout()
@@ -425,10 +494,10 @@ class App(ShowBase):
         self.ctx.finish()
         self.set_camera("默认")
         self.slot_buttons = []
-        bw = (PANEL_W - 2 * PAD) / 6
+        bw = INNER_W / SLOT_COLS
         for sid in g.slots():
-            b = DirectButton(parent=self.panel, text=sid, scale=0.034, relief=DGG.FLAT,
-                             frameSize=(-bw / 0.034 / 2 + 0.1, bw / 0.034 / 2 - 0.1, -0.6, 1.1),
+            b = DirectButton(parent=self.panel, text=sid, scale=0.036, relief=DGG.FLAT,
+                             frameSize=(-bw / 0.036 / 2 + 0.08, bw / 0.036 / 2 - 0.08, -0.62, 1.15),
                              text_fg=(0.1, 0.1, 0.1, 1), command=self.submit,
                              extraArgs=[("slot", sid)])
             self.slot_buttons.append((sid, b))
@@ -437,13 +506,15 @@ class App(ShowBase):
         self.title_txt.setText(g.name)
         self._set_wrapped(self.intro_txt, rich(g.intro))
         self.log = ["点车位按钮或“自动选位存车”开始。"]
+        self.log_hint.setText("")
         self.notice = ""
-        self.grid_txt.setText(g.ascii())
+        self.grid_txt.setText(color_grid(g.ascii()))
         self.show_stats()
 
     def run_steps(self, steps, kind):
         self.log = []
-        for s in steps:
+        for i, s in enumerate(steps, 1):
+            self.log_hint.setText(f"第 {i}/{len(steps)} 步")
             d = step_duration(s)
             self.log.append(f"{len(self.log) + 1}. {s['text']}" + (f" \1grey\1[{d:.1f}s]\2" if d else ""))
             self.render_log()
@@ -526,6 +597,7 @@ class App(ShowBase):
                 self.job.send(dt)
         except StopIteration:
             self.job = None
+            self.render_log()          # 任务结束：取消"当前步骤"的高亮
         except Exception:
             traceback.print_exc()
             self.job = None

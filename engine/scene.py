@@ -137,7 +137,7 @@ class Ctx:
             if np.isEmpty():
                 continue
             d = (np.getPos(self.root) - cam_pos).length()
-            np.setScale(h * d * px_to_world)
+            np.setScale(h * 1.2 * d * px_to_world)     # 1.2：比 VPython 的字号稍大一点，更好认
             alive.append((np, h))
         self.labels = alive
 
