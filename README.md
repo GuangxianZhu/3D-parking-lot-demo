@@ -21,6 +21,7 @@
 - 前提是装了 Python 3.8 以上（python.org 版安装时勾选 "Add python.exe to PATH"，或者装了 `py` 启动器）。
 - 黑色命令行窗口会和演示窗口一起开着；关掉演示窗口程序就退出。
 - 出问题想重装依赖：删掉 `.venv` 文件夹再双击。
+- 界面中文用的是仓库自带的思源黑体（`fonts/` 文件夹），不依赖系统字体。如果中文显示成方块，先看 `fonts/` 是否还在；命令行窗口里会打印用了哪个字体。
 
 ### 手动运行
 
@@ -52,7 +53,8 @@ python main.py
 main.py              界面（Panda3D 窗口和控件）与主循环
 engine/motion.py     动作原语（平移、转动、沿闭合路径运动）的纯数学部分
 engine/scene.py      Panda3D 绘制和动画播放（坐标换算也在这里）
-engine/fonts.py      中文字体查找、中文折行
+engine/fonts.py      中文字体加载、中文折行
+fonts/               自带的思源黑体子集（SIL OFL 开源授权）
 engine/kiosk.py      司机视角的出入口终端（只管画，流程在 main.py 的 driver_park / driver_pick）
 garages/*.py         每个文件对应一种车库：调度逻辑 + 外形（不依赖 Panda3D）
 tests/               随机存取测试：检查不变量，并核对动画终点和逻辑位置是否一致；渲染层坐标换算测试
