@@ -35,17 +35,19 @@ if errorlevel 1 (
 )
 
 :deps
-"%VENV_PY%" -c "import vpython" >nul 2>&1
+"%VENV_PY%" -c "import panda3d.core" >nul 2>&1
 if not errorlevel 1 goto run
 echo Installing dependencies (first run only, needs internet) ...
 "%VENV_PY%" -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] pip install failed. Check your network or proxy, then run again.
+    echo If it says no matching distribution for panda3d, your Python version
+    echo is too new or too old: install Python 3.12 or 3.13, delete .venv, run again.
     goto fail
 )
 
 :run
-echo Starting the demo. A browser tab will open; close this window to quit.
+echo Starting the demo. A 3D window will open; close it to quit.
 "%VENV_PY%" main.py
 if errorlevel 1 goto fail
 exit /b 0

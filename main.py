@@ -1,223 +1,536 @@
-"""立体车库原理演示：6 种车库，一个程序。
+"""立体车库原理演示：6 种车库，一个程序（Panda3D 窗口版）。
 
 运行：
-    pip install vpython
+    pip install -r requirements.txt
     python main.py
-会自动打开浏览器页面。鼠标右键拖动旋转视角，滚轮缩放。
+会打开一个独立窗口。鼠标左键或右键拖动旋转视角，滚轮缩放，中键拖动平移。
+快捷键：空格 = 暂停/继续，N = 下一步（单步模式）。
 """
+import math
 import random
+import traceback
+import unicodedata
 
-from vpython import canvas, vector, rate, button, slider, checkbox, wtext, menu
+from direct.gui import DirectGuiGlobals as DGG
+from direct.gui.DirectGui import (DirectButton, DirectCheckButton, DirectFrame, DirectOptionMenu,
+                                  DirectSlider)
+from direct.gui.OnscreenText import OnscreenText
+from direct.showbase.ShowBase import ShowBase
+from panda3d.core import (AmbientLight, AntialiasAttrib, ClockObject, DirectionalLight,
+                          GraphicsPipeSelection, TextNode, Vec3, WindowProperties, loadPrcFileData)
 
+from engine.fonts import load_fonts, register_styles, rich, wrap
 from engine.motion import step_duration
-from engine.scene import Ctx, V
+from engine.scene import Ctx, to_panda
 from garages import ALL
 from garages.base import total_time
 
 PLAYBACK_BASE = 10    # 速度 1x 时，1 秒真实时间播放 10 秒模拟时间
 
-scene = canvas(title="", width=1000, height=580, background=vector(0.92, 0.94, 0.97))
-ctx = Ctx(scene)
+loadPrcFileData("", """
+framebuffer-multisample 1
+multisamples 4
+sync-video 1
+show-frame-rate-meter 0
+audio-library-name null
+""")
+
+# ---- 版面（单位是 aspect2d：窗口高度 = 2） ----
+TOOLBAR_H = 0.25          # 顶部工具栏高度
+PANEL_W = 1.32            # 右侧说明栏宽度
+PAD = 0.035
+BG = (0.92, 0.94, 0.97, 1)
+BAR_BG = (0.83, 0.86, 0.91, 1)
+PANEL_BG = (0.98, 0.98, 0.99, 1)
+BTN = dict(relief=DGG.FLAT, frameColor=((0.97, 0.97, 0.98, 1), (0.75, 0.82, 0.95, 1),
+                                        (0.88, 0.92, 1, 1), (0.8, 0.8, 0.8, 1)),
+           pad=(0.35, 0.3), text_fg=(0.1, 0.1, 0.1, 1), pressEffect=1)
+SLOT_FULL = ((0.75, 0.9, 0.75, 1), (0.55, 0.8, 0.55, 1), (0.82, 0.95, 0.82, 1), (0.8, 0.8, 0.8, 1))
+SLOT_EMPTY = ((0.95, 0.95, 0.95, 1), (0.75, 0.82, 0.95, 1), (0.88, 0.92, 1, 1), (0.8, 0.8, 0.8, 1))
+VIEWS = {"正面": (0, -0.12, -1), "侧面": (-1, -0.15, -0.05), "俯视": (0, -1, -0.25)}
+FOV = 50
+
+
+def text_width(s):
+    """等宽字体里的显示宽度：汉字等全角字符算 2，英文数字算 1。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
+
+
+def pad(s, w, right=False):
+    gap = " " * max(0, w - text_width(s))
+    return gap + s if right else s + gap
 
 
 class Ctl:
     paused = False
     next = False
-    busy = False
 
 
-ctl = Ctl()
-cmds = []
-garage = None
-garage_idx = 0
-slot_buttons = []
-history = {"park": [], "retrieve": []}
-
-
-def submit(cmd):
-    if ctl.busy:
-        msg.text = "<b style='color:#c00'>正在执行上一个任务，请稍等。</b><br>" + msg.text.split("<br>", 1)[-1]
-        return
-    cmds.append(cmd)
-
-
-def on_pause(b):
-    ctl.paused = not ctl.paused
-    b.text = "继续 ▶" if ctl.paused else "暂停 ⏸"
-
-
-def on_next(_):
-    ctl.next = True
-
-
-def set_camera(kind):
-    cam = garage.camera
-    scene.center = V(cam["center"])
-    scene.range = cam["range"]
-    scene.forward = V({"默认": cam["forward"], "正面": (0, -0.12, -1),
-                       "侧面": (-1, -0.15, -0.05), "俯视": (0, -1, -0.25)}[kind])
-
-
-def on_speed(s):
-    speed_txt.text = f" {s.value:g}x "
-
-
-# ---------- 标题区：固定控件 ----------
-# VPython 的标题/说明区默认 white-space:pre，不会自动换行；这里改成可换行
-scene.append_to_title("<style>.glowscript > div {white-space: pre-wrap !important; max-width: 1000px;}</style>")
-scene.append_to_title("<h2 style='margin:6px 0'>立体车库原理演示</h2>")
-scene.append_to_title("车库类型 ")
-def on_menu(m):
-    if ctl.busy:
-        m.index = garage_idx          # 正在执行时不允许切换，把菜单拨回去
-    submit(("switch", m.index))
-
-
-type_menu = menu(choices=[c.name for c in ALL], index=0, bind=on_menu, pos=scene.title_anchor)
-scene.append_to_title("  ")
-button(text="自动选位存车", bind=lambda b: submit(("auto",)), pos=scene.title_anchor)
-button(text="随机取一辆", bind=lambda b: submit(("random_out",)), pos=scene.title_anchor)
-button(text="重置", bind=lambda b: submit(("switch", garage_idx)), pos=scene.title_anchor)
-button(text="对比 6 种车库", bind=lambda b: submit(("compare",)), pos=scene.title_anchor)
-scene.append_to_title("<br>视角 ")
-for k in ("默认", "正面", "侧面", "俯视"):
-    button(text=k, bind=lambda b, k=k: set_camera(k), pos=scene.title_anchor)
-scene.append_to_title("　速度")
-speed = slider(min=0.25, max=4, value=1, step=0.25, length=150, bind=on_speed, pos=scene.title_anchor)
-speed_txt = wtext(text=" 1x ", pos=scene.title_anchor)
-step_box = checkbox(text="单步模式 ", checked=False, bind=lambda c: None, pos=scene.title_anchor)
-button(text="下一步 ▶", bind=on_next, pos=scene.title_anchor)
-button(text="暂停 ⏸", bind=on_pause, pos=scene.title_anchor)
-scene.append_to_title("<br><b>车位</b>（● 表示有车。点一下：有车就取，没车就存到这里）<br>")
-
-# ---------- 说明区 ----------
-intro_txt = wtext(text="")
-scene.append_to_caption("<br>")
-grid_txt = wtext(text="")
-msg = wtext(text="")
-scene.append_to_caption("<br>")
-stats_txt = wtext(text="")
-scene.append_to_caption("<br>")
-compare_txt = wtext(text="")
-
-
-def refresh_buttons():
-    for sid, b in slot_buttons:
-        b.text = garage.slot_short(sid) + (" ●" if garage.has_car(sid) else " ○")
-
-
-def show_grid(text):
-    grid_txt.text = f"<pre style='font-size:14px;margin:4px 0'>{text}</pre>"
-
-
-def show_stats(last=None):
-    avg = lambda xs: f"{sum(xs) / len(xs):.1f}s" if xs else "—"
-    cars = sum(garage.has_car(s) for s in garage.slots())
-    s = f"<b>在库</b> {cars}/{len(garage.slots())} 辆　"
-    if last is not None:
-        s += f"<b>本次模拟耗时</b> {last:.1f}s　"
-    s += f"平均存车 {avg(history['park'])}，平均取车 {avg(history['retrieve'])}"
-    s += f"<br><span style='color:#777'>速度是示意值：{garage.speed_note}</span>"
-    stats_txt.text = s
-
-
-def switch(i):
-    global garage, garage_idx, slot_buttons, history
-    garage_idx = i
-    ctx.clear()
-    for _, b in slot_buttons:
-        b.delete()
-    garage = ALL[i]()
-    garage.build(ctx)
-    set_camera("默认")
-    slot_buttons = []
-    for sid in garage.slots():
-        b = button(text=sid, bind=lambda b, sid=sid: submit(("slot", sid)), pos=scene.title_anchor)
-        slot_buttons.append((sid, b))
-    refresh_buttons()
-    history = {"park": [], "retrieve": []}
-    intro_txt.text = (f"<div style='max-width:980px'><h3 style='margin:4px 0'>{garage.name}</h3>"
-                      f"{garage.intro}</div>")
-    show_grid(garage.ascii())
-    msg.text = "点车位按钮或'自动选位存车'开始。"
-    show_stats()
-
-
-def run(steps, kind):
-    log = []
-
-    def render(extra=""):
-        msg.text = "<div style='max-width:980px'>" + "<br>".join(log) + extra + "</div>"
-
-    for s in steps:
-        d = step_duration(s)
-        log.append(f"{len(log) + 1}. {s['text']}" + (f" <span style='color:#888'>[{d:.1f}s]</span>" if d else ""))
-        render()
-        if step_box.checked and s["actions"]:
-            ctl.next = False
-            render("<br><i style='color:#06c'>（单步模式：点“下一步”执行这一步）</i>")
-            while not ctl.next:
-                rate(30)
-            render()
-        ctx.play(s, lambda: PLAYBACK_BASE * speed.value, ctl)
-        show_grid(s["state"])
-    t = total_time(steps)
-    if kind:
-        history[kind].append(t)
-    refresh_buttons()
-    show_stats(t)
-
-
-def compare():
-    compare_txt.text = "正在计算……"
-    rows = []
-    for cls in ALL:
-        rng = random.Random(1)
-        g = cls()
-        times = {"park": [], "retrieve": []}
-        for _ in range(200):
-            full = [s for s in g.slots() if g.has_car(s)]
-            if rng.random() < 0.5 and len(full) < len(g.slots()):
-                times["park"].append(total_time(g.auto_park()))
-            elif full:
-                times["retrieve"].append(total_time(g.request(rng.choice(full))))
-        cap = len(g.slots())
-        avg = lambda xs: sum(xs) / len(xs)
-        rows.append(f"<tr><td>{cls.name}</td><td>{cap}</td><td>{g.footprint:.0f}</td>"
-                    f"<td>{cap / g.footprint * 100:.1f}</td><td>{avg(times['park']):.1f}</td>"
-                    f"<td>{avg(times['retrieve']):.1f}</td><td>{max(times['retrieve']):.1f}</td></tr>")
-    compare_txt.text = (
-        "<h3 style='margin:6px 0'>6 种车库对比（各随机存取 200 次）</h3>"
-        "<table border=1 cellpadding=4 style='border-collapse:collapse'>"
-        "<tr><th>类型</th><th>车位数</th><th>占地 m²</th><th>每 100 m² 车位</th>"
-        "<th>平均存车 s</th><th>平均取车 s</th><th>最慢取车 s</th></tr>" + "".join(rows) + "</table>"
-        "<span style='color:#777'>注意：各类型规模不同（2 到 24 个车位），速度和占地都是示意值，"
-        "只适合看趋势，不代表真实产品。占地没算车道和坡道。</span>")
-
-
-switch(0)
-while True:
-    rate(30)
-    if not cmds:
-        continue
-    cmd = cmds.pop(0)
-    ctl.busy = True
+def pick_window_size(w=1360, h=820):
+    """默认 1360×820；屏幕小（比如 1366×768 的笔记本）就缩小一点，免得窗口超出屏幕。"""
     try:
+        pipe = GraphicsPipeSelection.getGlobalPtr().makeDefaultPipe()
+        dw, dh = pipe.getDisplayWidth(), pipe.getDisplayHeight()
+    except Exception:
+        dw = dh = 0
+    if dw > 0 and dh > 0:
+        w, h = min(w, int(dw * 0.95)), min(h, int(dh * 0.85))
+    return w, h
+
+
+class App(ShowBase):
+    def __init__(self):
+        loadPrcFileData("", "win-size %d %d" % pick_window_size())
+        ShowBase.__init__(self)
+        props = WindowProperties()
+        props.setTitle("立体车库原理演示")
+        self.win.requestProperties(props)
+        self.disableMouse()
+        self.setBackgroundColor(*BG)
+        self.render.setAntialias(AntialiasAttrib.MMultisample)
+
+        self.ui_font, self.mono_font = load_fonts()
+        if self.ui_font:
+            DGG.setDefaultFont(self.ui_font)
+            TextNode.setDefaultFont(self.ui_font)
+        register_styles()
+        self._lights()
+
+        self.ctx = Ctx(self.render, self.ui_font)
+        self.ctl = Ctl()
+        self.cmds = []
+        self.job = None
+        self.garage = None
+        self.garage_idx = 0
+        self.slot_buttons = []
+        self.history = {"park": [], "retrieve": []}
+        self.log = []
+        self.notice = ""
+        self.cam_state = None
+        self.drag = None
+        self.view_right, self.view_top = 0.6, 0.9
+
+        self._build_toolbar()
+        self._build_panel()
+        self._build_compare()
+        self._bind_mouse()
+        self.accept("space", self.on_pause)
+        self.accept("n", self.on_next)
+
+        self.switch(0)
+        self.windowEvent(self.win)
+        self.taskMgr.add(self.tick, "tick")
+
+    # ================= 场景外观 =================
+    def _lights(self):
+        amb = AmbientLight("amb")
+        amb.setColor((0.5, 0.5, 0.52, 1))
+        self.render.setLight(self.render.attachNewNode(amb))
+        for hpr, c in (((-35, -50, 0), 0.65), ((140, -30, 0), 0.25)):
+            d = DirectionalLight("sun")
+            d.setColor((c, c, c, 1))
+            np = self.render.attachNewNode(d)
+            np.setHpr(*hpr)
+            self.render.setLight(np)
+
+    def windowEvent(self, win):
+        """窗口大小变了：3D 画面只占左下那一块，镜头宽高比要跟着改。"""
+        ShowBase.windowEvent(self, win)
+        if win != self.win or not self.win.hasSize():
+            return
+        w, h = self.win.getXSize(), self.win.getYSize()
+        if h == 0:
+            return
+        aspect = w / h
+        right = max(0.3, 1 - PANEL_W / (2 * aspect))
+        top = 1 - TOOLBAR_H / 2
+        self.cam.node().getDisplayRegion(0).setDimensions(0, right, 0, top)
+        self.camLens.setAspectRatio((w * right) / (h * top))
+        self.camLens.setMinFov(FOV)
+        self.view_right, self.view_top = right, top
+
+    # ================= 顶部工具栏 =================
+    def _flow(self, parent, x, y, widget, gap=0.02):
+        """把控件从左往右排：放在 x 处，返回下一个控件的 x。"""
+        s = widget.getScale()[0]
+        if isinstance(widget, OnscreenText):
+            widget.setPos(x, y)
+            return x + widget.textNode.getWidth() * s + gap
+        l, r, _, _ = widget.getBounds()
+        widget.setPos(x - l * s, 0, y)
+        return x + (r - l) * s + gap
+
+    def _button(self, parent, text, cmd, scale=0.042, **kw):
+        opts = dict(BTN)
+        opts.update(kw)
+        return DirectButton(parent=parent, text=text, command=cmd, scale=scale, **opts)
+
+    def _build_toolbar(self):
+        bar = DirectFrame(parent=self.a2dTopLeft, frameColor=BAR_BG,
+                          frameSize=(0, 20, -TOOLBAR_H, 0))
+        y1, y2 = -0.085, -0.195
+        x = PAD
+        x = self._flow(bar, x, y1, OnscreenText(parent=bar, text="立体车库原理演示", scale=0.055,
+                                                  align=TextNode.ALeft, fg=(0.1, 0.15, 0.3, 1),
+                                                  ), 0.06)
+        x = self._flow(bar, x, y1, OnscreenText(parent=bar, text="车库类型", scale=0.042,
+                                                  align=TextNode.ALeft))
+        self.menu = DirectOptionMenu(parent=bar, items=[c.name for c in ALL], initialitem=0,
+                                     command=self.on_menu, scale=0.042, relief=DGG.FLAT,
+                                     frameColor=(1, 1, 1, 1), highlightColor=(0.75, 0.82, 0.95, 1),
+                                     item_frameColor=(1, 1, 1, 1), popupMarker_scale=0.6,
+                                     pad=(0.35, 0.3))
+        # 下拉框的边框要到第一帧之后才按最长的选项撑开，这里直接按最长选项算宽度
+        self.menu.setPos(x + 0.015, 0, y1)
+        x += (self.menu.maxWidth + 1.6) * 0.042 + 0.05
+        for text, cmd in (("自动选位存车", lambda: self.submit(("auto",))),
+                          ("随机取一辆", lambda: self.submit(("random_out",))),
+                          ("重置", lambda: self.submit(("switch", self.garage_idx))),
+                          ("对比 6 种车库", lambda: self.submit(("compare",)))):
+            x = self._flow(bar, x, y1, self._button(bar, text, cmd))
+
+        x = PAD
+        x = self._flow(bar, x, y2, OnscreenText(parent=bar, text="视角", scale=0.042,
+                                                  align=TextNode.ALeft))
+        for k in ("默认", "正面", "侧面", "俯视"):
+            x = self._flow(bar, x, y2, self._button(bar, k, self.set_camera, extraArgs=[k]))
+        x = self._flow(bar, x + 0.04, y2, OnscreenText(parent=bar, text="速度", scale=0.042,
+                                                         align=TextNode.ALeft))
+        self.speed = DirectSlider(parent=bar, range=(0.25, 4), value=1, pageSize=0.25, scale=0.22,
+                                  frameSize=(-1, 1, -0.08, 0.08), frameColor=(0.7, 0.72, 0.78, 1),
+                                  thumb_relief=DGG.FLAT, thumb_frameColor=(0.2, 0.4, 0.75, 1),
+                                  thumb_frameSize=(-0.05, 0.05, -0.12, 0.12),
+                                  command=self.on_speed)
+        self.speed.setPos(x + 0.24, 0, y2 + 0.014)       # 滑块的边界框算不准，手动摆
+        x += 0.5
+        self.speed_txt = OnscreenText(parent=bar, text="1x", scale=0.042, align=TextNode.ALeft,
+                                      mayChange=True)
+        x = self._flow(bar, x, y2, self.speed_txt, 0.07)
+        self.step_box = DirectCheckButton(parent=bar, text="单步模式", scale=0.042, relief=DGG.FLAT,
+                                          frameColor=(0, 0, 0, 0), boxPlacement="left",
+                                          boxRelief=DGG.SUNKEN, pad=(0.2, 0.2))
+        x = self._flow(bar, x, y2, self.step_box)
+        x = self._flow(bar, x, y2, self._button(bar, "下一步 ▶", self.on_next))
+        self.pause_btn = self._button(bar, "暂停 ‖", self.on_pause)
+        self._flow(bar, x, y2, self.pause_btn)
+
+    # ================= 右侧说明栏 =================
+    def _text(self, scale, font=None, fg=(0.1, 0.1, 0.1, 1)):
+        return OnscreenText(parent=self.panel, text="", scale=scale, align=TextNode.ALeft,
+                            fg=fg, font=font or self.ui_font, mayChange=True)
+
+    @staticmethod
+    def _set_wrapped(ost, text):
+        """按说明栏宽度自动折行后再显示。"""
+        ost.setText(wrap(text, ost.textNode, (PANEL_W - 2 * PAD) / ost.getScale()[0]))
+
+    def _build_panel(self):
+        self.panel = DirectFrame(parent=self.a2dTopRight, frameColor=PANEL_BG,
+                                 frameSize=(-PANEL_W, 0, -2, -TOOLBAR_H))
+        self.x0 = -PANEL_W + PAD
+        self.title_txt = self._text(0.052, fg=(0.1, 0.15, 0.3, 1))
+        self.intro_txt = self._text(0.036)
+        self.slot_hdr = self._text(0.036)
+        self._set_wrapped(self.slot_hdr, "\1b\1车位\2　绿色 ● 表示有车。点一下：有车就取，没车就存到这里。")
+        self.grid_hdr = self._text(0.036)
+        self.grid_hdr.setText("\1b\1当前状态\2")
+        self.grid_txt = self._text(0.034, font=self.mono_font, fg=(0.15, 0.15, 0.15, 1))
+        self.log_hdr = self._text(0.036)
+        self.log_hdr.setText("\1b\1执行步骤\2")
+        self.log_txt = self._text(0.034)
+        self.stats_txt = OnscreenText(parent=self.a2dBottomRight, text="", scale=0.034,
+                                      align=TextNode.ALeft, fg=(0.1, 0.1, 0.1, 1), mayChange=True)
+        self.slot_area_h = 0
+
+    @staticmethod
+    def _height(ost):
+        tn = ost.textNode
+        return tn.getNumRows() * tn.getLineHeight() * ost.getScale()[0]
+
+    def relayout(self):
+        """按各段文字的实际行数从上往下排，日志区占用剩下的空间。"""
+        x0 = self.x0
+        y = -TOOLBAR_H - PAD
+        for ost, gap in ((self.title_txt, 0.02), (self.intro_txt, 0.03)):
+            sc = ost.getScale()[0]
+            ost.setPos(x0, y - sc * 0.9)
+            y -= self._height(ost) + gap
+        self.slot_hdr.setPos(x0, y - 0.036 * 0.9)
+        y -= 0.036 * 1.3 + 0.015
+        bw, bh = (PANEL_W - 2 * PAD) / 6, 0.068
+        for i, (_, b) in enumerate(self.slot_buttons):
+            r, c = divmod(i, 6)
+            b.setPos(x0 + c * bw + bw / 2, 0, y - r * bh - bh / 2 - 0.012)
+        rows = math.ceil(len(self.slot_buttons) / 6)
+        y -= rows * bh + 0.035
+        self.grid_hdr.setPos(x0, y - 0.036 * 0.9)
+        y -= 0.036 * 1.3 + 0.01
+        self.grid_txt.setPos(x0, y - 0.034 * 0.9)
+        y -= self._height(self.grid_txt) + 0.03
+        self.log_hdr.setPos(x0, y - 0.036 * 0.9)
+        y -= 0.036 * 1.3 + 0.01
+        self.log_top = y
+        self.log_txt.setPos(x0, y - 0.034 * 0.9)
+        self.stats_txt.setPos(x0, PAD + self._height(self.stats_txt) - 0.034 * 0.9)
+        self.render_log()
+
+    def render_log(self, extra=""):
+        """日志放不下时，从最早的一条开始省略，保证最新的几步总能看到。"""
+        bottom = -2 + PAD + self._height(self.stats_txt) + 0.03
+        tn = self.log_txt.textNode
+        rows_fit = max(1, int((self.log_top - bottom) / (tn.getLineHeight() * 0.034)))
+        lines = ([self.notice] if self.notice else []) + self.log + ([extra] if extra else [])
+        skip = 0
+        while True:
+            shown = lines[skip:]
+            text = ("\1grey\1（前 %d 步已省略）\2\n" % skip if skip else "") + "\n".join(shown)
+            self._set_wrapped(self.log_txt, text)
+            if tn.getNumRows() <= rows_fit or len(shown) <= 1:
+                break
+            skip += 1
+
+    # ================= 对比表（盖在画面上的弹出框） =================
+    def _build_compare(self):
+        self.cmp_frame = DirectFrame(parent=self.aspect2d, frameColor=(1, 1, 1, 1), relief=DGG.RIDGE, borderWidth=(0.01, 0.01),
+                                     frameSize=(-1.5, 1.5, -0.62, 0.62), pos=(0, 0, -0.05))
+        self.cmp_txt = OnscreenText(parent=self.cmp_frame, text="", scale=0.04, align=TextNode.ALeft,
+                                    font=self.mono_font, fg=(0.1, 0.1, 0.1, 1), pos=(-1.42, 0.5),
+                                    mayChange=True)
+        self._button(self.cmp_frame, "关闭", self.cmp_frame.hide, pos=(1.38, 0, 0.53))
+        self.cmp_frame.hide()
+
+    # ================= 相机：轨道式，绕一个中心点转 =================
+    def _bind_mouse(self):
+        for btn, mode in (("mouse1", "orbit"), ("mouse3", "orbit"), ("mouse2", "pan")):
+            self.accept(btn, self._drag_start, [mode])
+            self.accept(btn + "-up", self._drag_end)
+        self.accept("wheel_up", self._zoom, [0.9])
+        self.accept("wheel_down", self._zoom, [1 / 0.9])
+
+    def _in_view(self):
+        if not self.mouseWatcherNode.hasMouse():
+            return False
+        m = self.mouseWatcherNode.getMouse()
+        return (m.x + 1) / 2 < self.view_right and (m.y + 1) / 2 < self.view_top
+
+    def _drag_start(self, mode):
+        if self._in_view() and self.cmp_frame.isHidden():
+            m = self.mouseWatcherNode.getMouse()
+            self.drag = (mode, m.x, m.y)
+
+    def _drag_end(self):
+        self.drag = None
+
+    def _zoom(self, k):
+        if self._in_view() and self.cam_state:
+            self.cam_state["dist"] = min(200, max(2, self.cam_state["dist"] * k))
+            self._apply_camera()
+
+    def _update_drag(self):
+        if not self.drag or not self.mouseWatcherNode.hasMouse():
+            return
+        mode, x0, y0 = self.drag
+        m = self.mouseWatcherNode.getMouse()
+        dx, dy = m.x - x0, m.y - y0
+        self.drag = (mode, m.x, m.y)
+        cs = self.cam_state
+        if mode == "orbit":
+            cs["h"] -= dx * 120
+            cs["p"] = max(-89, min(5, cs["p"] + dy * 80))
+        else:
+            q = self.camera.getQuat()
+            k = cs["dist"] * 0.5
+            cs["center"] -= q.getRight() * dx * k + q.getUp() * dy * k
+        self._apply_camera()
+
+    def _apply_camera(self):
+        cs = self.cam_state
+        h, p = math.radians(cs["h"]), math.radians(cs["p"])
+        fwd = Vec3(-math.sin(h) * math.cos(p), math.cos(h) * math.cos(p), math.sin(p))
+        self.camera.setPos(cs["center"] - fwd * cs["dist"])
+        self.camera.setHpr(cs["h"], cs["p"], 0)
+
+    def set_camera(self, kind):
+        cam = self.garage.camera
+        f = to_panda(VIEWS.get(kind, cam["forward"])).normalized()
+        self.cam_state = {
+            "center": to_panda(cam["center"]),
+            # VPython 的 range 是中心到画面边缘的距离，换成相机离中心多远
+            "dist": cam["range"] / math.tan(math.radians(FOV / 2)) * 1.15,
+            "h": math.degrees(math.atan2(-f.x, f.y)),
+            "p": math.degrees(math.asin(max(-1, min(1, f.z)))),
+        }
+        self._apply_camera()
+
+    # ================= 控件回调 =================
+    def submit(self, cmd):
+        if self.job is not None:
+            self.notice = "\1red\1正在执行上一个任务，请稍等。\2"
+            self.render_log()
+            return
+        self.cmds.append(cmd)
+
+    def on_menu(self, _item):
+        idx = self.menu.selectedIndex
+        if self.job is not None:
+            self.menu.set(self.garage_idx, fCommand=0)    # 正在执行时不允许切换，把菜单拨回去
+        self.submit(("switch", idx))
+
+    def on_pause(self):
+        self.ctl.paused = not self.ctl.paused
+        self.pause_btn["text"] = "继续 ▶" if self.ctl.paused else "暂停 ‖"
+
+    def on_next(self):
+        self.ctl.next = True
+
+    def speed_value(self):
+        return round(self.speed["value"] * 4) / 4
+
+    def on_speed(self):
+        self.speed_txt.setText(f"{self.speed_value():g}x")
+
+    # ================= 显示 =================
+    def refresh_buttons(self):
+        for sid, b in self.slot_buttons:
+            full = self.garage.has_car(sid)
+            b["text"] = self.garage.slot_short(sid) + (" ●" if full else " ○")
+            b["frameColor"] = SLOT_FULL if full else SLOT_EMPTY
+
+    def show_grid(self, text):
+        self.grid_txt.setText(text)
+        self.relayout()
+
+    def show_stats(self, last=None):
+        h = self.history
+        avg = lambda xs: f"{sum(xs) / len(xs):.1f}s" if xs else "—"
+        cars = sum(self.garage.has_car(s) for s in self.garage.slots())
+        s = f"\1b\1在库\2 {cars}/{len(self.garage.slots())} 辆　"
+        if last is not None:
+            s += f"\1b\1本次模拟耗时\2 {last:.1f}s　"
+        s += f"平均存车 {avg(h['park'])}，平均取车 {avg(h['retrieve'])}"
+        s += f"\n\1grey\1速度是示意值：{self.garage.speed_note}\2"
+        self._set_wrapped(self.stats_txt, s)
+        self.relayout()
+
+    # ================= 命令（都是生成器：每帧推进一点，不阻塞窗口） =================
+    def switch(self, i):
+        self.garage_idx = i
+        self.menu.set(i, fCommand=0)
+        self.cmp_frame.hide()
+        self.ctx.clear()
+        for _, b in self.slot_buttons:
+            b.destroy()
+        g = self.garage = ALL[i]()
+        g.build(self.ctx)
+        self.ctx.finish()
+        self.set_camera("默认")
+        self.slot_buttons = []
+        bw = (PANEL_W - 2 * PAD) / 6
+        for sid in g.slots():
+            b = DirectButton(parent=self.panel, text=sid, scale=0.034, relief=DGG.FLAT,
+                             frameSize=(-bw / 0.034 / 2 + 0.1, bw / 0.034 / 2 - 0.1, -0.6, 1.1),
+                             text_fg=(0.1, 0.1, 0.1, 1), command=self.submit,
+                             extraArgs=[("slot", sid)])
+            self.slot_buttons.append((sid, b))
+        self.refresh_buttons()
+        self.history = {"park": [], "retrieve": []}
+        self.title_txt.setText(g.name)
+        self._set_wrapped(self.intro_txt, rich(g.intro))
+        self.log = ["点车位按钮或“自动选位存车”开始。"]
+        self.notice = ""
+        self.grid_txt.setText(g.ascii())
+        self.show_stats()
+
+    def run_steps(self, steps, kind):
+        self.log = []
+        for s in steps:
+            d = step_duration(s)
+            self.log.append(f"{len(self.log) + 1}. {s['text']}" + (f" \1grey\1[{d:.1f}s]\2" if d else ""))
+            self.render_log()
+            if self.step_box["indicatorValue"] and s["actions"]:
+                self.ctl.next = False
+                self.render_log("\1b\1（单步模式：点“下一步”或按 N 执行这一步）\2")
+                while not self.ctl.next:
+                    yield
+                self.render_log()
+            yield from self.ctx.play(s, lambda: PLAYBACK_BASE * self.speed_value(), self.ctl)
+            self.show_grid(s["state"])
+        t = total_time(steps)
+        if kind:
+            self.history[kind].append(t)
+        self.refresh_buttons()
+        self.show_stats(t)
+
+    def compare(self):
+        self.cmp_txt.setText("正在计算……")
+        self.cmp_frame.show()
+        yield                      # 先让"正在计算"显示出来
+        head = ["类型", "车位数", "占地m²", "每100m²车位", "平均存车s", "平均取车s", "最慢取车s"]
+        rows = []
+        for cls in ALL:
+            rng = random.Random(1)
+            g = cls()
+            times = {"park": [], "retrieve": []}
+            for _ in range(200):
+                full = [s for s in g.slots() if g.has_car(s)]
+                if rng.random() < 0.5 and len(full) < len(g.slots()):
+                    times["park"].append(total_time(g.auto_park()))
+                elif full:
+                    times["retrieve"].append(total_time(g.request(rng.choice(full))))
+            cap = len(g.slots())
+            avg = lambda xs: sum(xs) / len(xs)
+            rows.append([cls.name, str(cap), f"{g.footprint:.0f}", f"{cap / g.footprint * 100:.1f}",
+                         f"{avg(times['park']):.1f}", f"{avg(times['retrieve']):.1f}",
+                         f"{max(times['retrieve']):.1f}"])
+            yield                  # 每算完一种让窗口刷新一下，不会卡住
+        widths = [max(text_width(r[i]) for r in rows + [head]) for i in range(len(head))]
+        fmt = lambda r: "  ".join(pad(c, widths[i], right=i > 0) for i, c in enumerate(r))
+        lines = ["\1b\1" "6 种车库对比（各随机存取 200 次）\2", "", fmt(head),
+                 "-" * (sum(widths) + 2 * (len(widths) - 1))] + [fmt(r) for r in rows]
+        lines += ["", "\1grey\1注意：各类型规模不同（2 到 24 个车位），速度和占地都是示意值，",
+                  "只适合看趋势，不代表真实产品。占地没算车道和坡道。\2"]
+        self.cmp_txt.setText("\n".join(lines))
+
+    def make_job(self, cmd):
+        g = self.garage
         if cmd[0] == "switch":
-            switch(cmd[1])
+            self.switch(cmd[1])
         elif cmd[0] == "slot":
-            kind = "retrieve" if garage.has_car(cmd[1]) else "park"
-            run(garage.request(cmd[1]), kind)
+            kind = "retrieve" if g.has_car(cmd[1]) else "park"
+            yield from self.run_steps(g.request(cmd[1]), kind)
         elif cmd[0] == "auto":
-            has_empty = any(not garage.has_car(s) for s in garage.slots())
-            run(garage.auto_park(), "park" if has_empty else None)
+            has_empty = any(not g.has_car(s) for s in g.slots())
+            yield from self.run_steps(g.auto_park(), "park" if has_empty else None)
         elif cmd[0] == "random_out":
-            full = [s for s in garage.slots() if garage.has_car(s)]
+            full = [s for s in g.slots() if g.has_car(s)]
             if full:
-                run(garage.request(random.choice(full)), "retrieve")
+                yield from self.run_steps(g.request(random.choice(full)), "retrieve")
             else:
-                msg.text = "车库是空的。"
+                self.log = ["车库是空的。"]
+                self.render_log()
         elif cmd[0] == "compare":
-            compare()
-    finally:
-        ctl.busy = False
+            yield from self.compare()
+
+    def tick(self, task):
+        dt = min(ClockObject.getGlobalClock().getDt(), 0.1)    # 拖动窗口等造成的长卡顿不要让动画一下跳过去
+        self._update_drag()
+        if self.win.hasSize():
+            px_h = self.win.getYSize() * self.view_top
+            self.ctx.update_labels(self.camera, 2 * math.tan(math.radians(self.camLens.getFov()[1] / 2)) / px_h)
+        try:
+            if self.job is None and self.cmds:
+                self.notice = ""
+                self.job = self.make_job(self.cmds.pop(0))
+                next(self.job)
+            elif self.job is not None:
+                self.job.send(dt)
+        except StopIteration:
+            self.job = None
+        except Exception:
+            traceback.print_exc()
+            self.job = None
+        return task.cont
+
+
+if __name__ == "__main__":
+    App().run()
